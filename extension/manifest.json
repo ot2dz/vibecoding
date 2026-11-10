@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "AI Studio Vibe Bridge",
+  "version": "1.0.0",
+  "description": "Bridge between Google AI Studio and the local Python Vibe Coding server.",
+  "host_permissions": [
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*",
+    "https://aistudio.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://aistudio.google.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

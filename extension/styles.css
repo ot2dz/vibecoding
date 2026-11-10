@@ -1,0 +1,265 @@
+/* ==========================================================================
+   AI Studio Vibe Bridge - styles.css
+   تصميم حديث (Dark / Modern Tech).
+   الأصناف مُسبَّقة بـ `vibe-` لتجنّب التعارض مع أنماط AI Studio.
+   ========================================================================== */
+
+/* ==========================================================================
+   1) مؤشر الحالة العائم (Status Pill)
+   ========================================================================== */
+#vibe-status-pill {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  background: rgba(20, 22, 31, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  user-select: none;
+}
+
+.vibe-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #6b7280; /* رمادي قبل أول فحص */
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+  flex: 0 0 auto;
+}
+
+.vibe-dot.vibe-online {
+  background: #22c55e; /* أخضر: الخادم يعمل */
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+  animation: vibe-pulse 2s infinite;
+}
+
+.vibe-dot.vibe-offline {
+  background: #ef4444; /* أحمر: الخادم مغلق */
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.9);
+}
+
+@keyframes vibe-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+  70%  { box-shadow: 0 0 0 7px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
+/* ==========================================================================
+   2) أزرار كتل الأكواد (Per-Block Injected Buttons)
+   ========================================================================== */
+.vibe-block-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 6px 4px;
+  margin-bottom: 2px;
+}
+
+.vibe-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+
+.vibe-code-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.vibe-code-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.vibe-code-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* الزر الأخضر: Push New / Push File */
+.vibe-code-btn-green {
+  background: #2e7d32;
+}
+.vibe-code-btn-green:hover:not(:disabled) {
+  background: #1b5e20;
+}
+
+/* الزر الأزرق: Apply Replace */
+.vibe-code-btn-blue {
+  background: #1565c0;
+}
+.vibe-code-btn-blue:hover:not(:disabled) {
+  background: #0d47a1;
+}
+
+/* البادج الداكن: Target FIND (للقراءة فقط) */
+.vibe-badge-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  background: #374151;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  user-select: none;
+}
+
+/* ==========================================================================
+   3) الشريط السفلي المدمج (Bottom Action Bar)
+   ========================================================================== */
+#vibe-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+/* الوضع المدمج داخل صف أزرار صندوق الكتابة (prompt-box-container) */
+#vibe-bottom-bar.vibe-bar-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 0;
+  margin: 0 6px 0 0;
+}
+
+/* تصغير الأزرار لتناسب صف أدوات صندوق الكتابة */
+#vibe-bottom-bar.vibe-bar-inline .vibe-bar-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* شريط عائم ثابت في الزاوية السفلية اليسرى (احتياطي بعيداً عن المحادثة) */
+#vibe-bottom-bar.vibe-bar-fixed {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  right: auto;
+  top: auto;
+  transform: none;
+  z-index: 2147483646;
+  padding: 6px;
+  background: rgba(20, 22, 31, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+}
+
+.vibe-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+
+.vibe-bar-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.vibe-bar-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* الزر الأصفر/الكهرماني: Digest Codebase */
+.vibe-bar-digest {
+  background: #f59e0b;
+  color: #1f2937;
+}
+.vibe-bar-digest:hover:not(:disabled) {
+  background: #d97706;
+}
+
+/* الزر البنفسجي: Push All */
+.vibe-bar-pushall {
+  background: #6a1b9a;
+}
+.vibe-bar-pushall:hover:not(:disabled) {
+  background: #7b1fa2;
+}
+
+/* ==========================================================================
+   4) الإشعارات (Toast)
+   ========================================================================== */
+#vibe-toast-container {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+
+.vibe-toast {
+  max-width: 440px;
+  padding: 11px 18px;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #f9fafb;
+  background: rgba(31, 34, 46, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 4px solid #6366f1;
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  animation: vibe-toast-in 0.25s ease forwards;
+}
+
+.vibe-toast.vibe-toast-success { border-left-color: #22c55e; }
+.vibe-toast.vibe-toast-error   { border-left-color: #ef4444; }
+.vibe-toast.vibe-toast-info    { border-left-color: #6366f1; }
+
+.vibe-toast.vibe-toast-hide {
+  animation: vibe-toast-out 0.25s ease forwards;
+}
+
+@keyframes vibe-toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes vibe-toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(12px); }
+}
