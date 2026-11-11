@@ -124,22 +124,42 @@
     statusDot = document.getElementById("vibe-dot");
   }
 
-  function setStatus(isOnline) {
+  function setStatus(isOnline, label) {
     if (!statusDot) statusDot = document.getElementById("vibe-dot");
     if (!statusDot) return;
     statusDot.classList.toggle("vibe-online", isOnline);
     statusDot.classList.toggle("vibe-offline", !isOnline);
     const text = document.getElementById("vibe-status-text");
-    if (text) text.textContent = isOnline ? "متصل" : "غير متصل";
+    if (text) text.textContent = label || (isOnline ? "متصل" : "غير متصل");
   }
+
+  // الجسر القديم لا يعيد `limits` في /health، ما يعني أن الحماية من الحجم غائبة.
+  // نرصد ذلك مرة واحدة ونحذر بدل أن يُحرق السياق بصمت.
+  let legacyBridgeWarned = false;
 
   async function checkHealth() {
     log("فحص الحالة: GET /health …");
     try {
       const res = await bridgeFetch("/health", { method: "GET" });
       const online = !!res.ok;
-      setStatus(online);
-      log(online ? "🟢 الخادم متصل" : `🔴 الخادم غير متصل (status=${res.status})`);
+      const limits = res.data ? res.data.limits : null;
+      const isLegacy = online && !limits;
+
+      setStatus(online, isLegacy ? "جسر قديم" : undefined);
+      log(
+        online
+          ? `🟢 الخادم متصل${isLegacy ? " (نسخة قديمة بلا حدود مسح)" : ""}`
+          : `🔴 الخادم غير متصل (status=${res.status})`
+      );
+
+      if (isLegacy && !legacyBridgeWarned) {
+        legacyBridgeWarned = true;
+        showToast(
+          "الجسر يعمل بنسخة قديمة (بلا حدود حجم). أعد تشغيل bridge.py المحدَّث",
+          "error",
+          10000
+        );
+      }
       return online;
     } catch (err) {
       setStatus(false);
@@ -537,6 +557,31 @@
     return out;
   }
 
+  // عتبات التحذير من حجم السياق (تقديري، بناءً على عدّاد الجسر).
+  const CONTEXT_TOKEN_WARN = 250000;
+  const CONTEXT_TOKEN_DANGER = 700000;
+
+  /** تنسيق مختصر لعدد التوكنات: 900 -> "900" و 15000 -> "15K". */
+  function formatTokens(count) {
+    const value = Number(count) || 0;
+    if (value < 1000) return String(value);
+    if (value < 10000) return `${(value / 1000).toFixed(1)}K`;
+    if (value < 1000000) return `${Math.round(value / 1000)}K`;
+    return `${(value / 1000000).toFixed(1)}M`;
+  }
+
+  /** وصف مختصر لإحصاءات السياق القادمة من الجسر. */
+  function contextSummary(stats, fileCount) {
+    const files = stats && stats.file_count != null ? stats.file_count : fileCount;
+    const tokens = stats ? stats.approx_tokens : null;
+    const dropped = stats ? stats.dropped_count : 0;
+    const parts = [`${files} ملفًا`];
+    if (tokens != null) parts.push(`~${formatTokens(tokens)} توكن`);
+    if (dropped > 0) parts.push(`استُبعد ${dropped}`);
+    if (stats && stats.truncated) parts.push("تم الاقتطاع");
+    return parts.join(" · ");
+  }
+
   async function injectIntoInput(text) {
     const input = findInputBox();
     if (!input) return false;
@@ -595,17 +640,58 @@
       if (!res.ok) throw new Error(res.error || `HTTP ${res.status}`);
       const data = res.data || {};
       const files = data.files || [];
-      const text = formatContext(files);
+      const stats = data.stats || null;
 
-      const injected = await injectIntoInput(text);
-      if (injected) {
-        showToast(`تم جلب السياق (${files.length} ملفات)`, "success");
-      } else if (await copyToClipboard(text)) {
+      if (files.length === 0) {
         showToast(
-          `تعذّر الحقن — تم نسخ السياق (${files.length} ملفات) للحافظة`,
-          "info",
-          4500
+          "لم يتم العثور على ملفات نصية صالحة — تحقق من .gitignore",
+          "error",
+          6000
         );
+        return;
+      }
+
+      const tokens = stats ? Number(stats.approx_tokens) || 0 : 0;
+      const summary = contextSummary(stats, files.length);
+      log("Digest Codebase: إحصاءات", { summary, stats });
+
+      // جسر قديم لا يعيد إحصاءات: لا نعرف الحجم، فنطلب تأكيدًا قبل حرق السياق.
+      if (!stats) {
+        const proceed = window.confirm(
+          "الجسر لا يعيد إحصاءات الحجم (نسخة قديمة).\n" +
+            "قد يكون السياق أكبر من نافذة النموذج. هل تريد المتابعة؟"
+        );
+        if (!proceed) {
+          showToast("تم إلغاء إرسال السياق", "info");
+          return;
+        }
+      }
+
+      // حماية من إحراق نافذة السياق: نطلب تأكيدًا صريحًا عند التجاوز الكبير.
+      if (tokens >= CONTEXT_TOKEN_DANGER) {
+        const proceed = window.confirm(
+          `السياق كبير جدًا: ~${formatTokens(tokens)} توكن.\n\n` +
+            "قد يتجاوز نافذة النموذج أو يبطئ الصفحة. هل تريد المتابعة؟"
+        );
+        if (!proceed) {
+          showToast("تم إلغاء إرسال السياق", "info");
+          return;
+        }
+      }
+
+      const text = formatContext(files);
+      const injected = await injectIntoInput(text);
+
+      if (injected) {
+        if (tokens >= CONTEXT_TOKEN_DANGER) {
+          showToast(`تم جلب السياق (${summary})`, "error", 8000);
+        } else if (tokens >= CONTEXT_TOKEN_WARN) {
+          showToast(`تم جلب السياق (${summary})`, "warn", 7000);
+        } else {
+          showToast(`تم جلب السياق (${summary})`, "success");
+        }
+      } else if (await copyToClipboard(text)) {
+        showToast(`تعذّر الحقن — تم نسخ السياق (${summary}) للحافظة`, "info", 5000);
       } else {
         showToast("تعذّر حقن السياق أو نسخه", "error");
       }

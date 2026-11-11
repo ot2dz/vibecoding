@@ -4,10 +4,15 @@ Local Bridge Server for Vibe Coding
 =====================================
 خادم محلي بسيط مبني على Flask يعمل كجسر بين واجهة Vibe Coding ونظام الملفات
 على الجهاز. يوفّر ثلاث نقاط أساسية:
-    - GET  /health   : للتأكد من أن الخادم يعمل وإرجاع مجلد العمل الحالي.
-    - GET  /context  : لمسح مجلد العمل وإرجاع الملفات النصية ومحتوياتها.
+    - GET  /health   : للتأكد من أن الخادم يعمل وإرجاع مجلد العمل الحالي وحدود المسح.
+    - GET  /context  : لمسح مجلد العمل وإرجاع الملفات النصية ومحتوياتها، مع إحصاءات
+                       الحجم وتقدير التوكن والملفات المستبعدة.
     - POST /write    : لكتابة/تعديل الملفات بنمطين صريحين عبر حقل mode:
                        "full" للكتابة الكاملة، و "replace" للبحث والاستبدال المباشر.
+
+حدود المسح (يمكن ضبطها عبر متغيرات بيئة):
+    VIBE_MAX_FILE_BYTES   : أكبر حجم لملف واحد يُرسل (الافتراضي 400KB).
+    VIBE_MAX_TOTAL_BYTES  : أكبر حجم كلي لحمولة /context (الافتراضي 2MB).
 
 التشغيل:
     pip install -r requirements.txt
@@ -16,6 +21,7 @@ Local Bridge Server for Vibe Coding
 
 import difflib
 import os
+import re
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -52,19 +58,271 @@ def handle_preflight(path):
     """الرد على طلبات الـ Preflight (OPTIONS) فوراً بكود 200."""
     return ("", 200)
 
-# المجلدات والملفات التي يجب تجاهلها تماماً أثناء مسح السياق.
-IGNORED_NAMES = {
+# ---------------------------------------------------------------------------
+# إعدادات المسح (Context Scan Limits)
+# ---------------------------------------------------------------------------
+
+
+def _int_env(name, default):
+    """قراءة متغير بيئة رقمي مع الرجوع إلى قيمة افتراضية آمنة."""
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# أكبر حجم لملف واحد يُرسل ضمن السياق (بالبايت). الملفات الأكبر تُستبعد ويُبلَّغ عنها.
+MAX_FILE_BYTES = _int_env("VIBE_MAX_FILE_BYTES", 256 * 1024)
+# السقف الكلي لحمولة /context. يمنع تجاوز نافذة السياق بملفات مولَّدة ضخمة.
+# الافتراضي متحفظ لأن التقدير بالتوكن تقريبي، والنص العربي أثقل من الإنجليزي.
+MAX_TOTAL_BYTES = _int_env("VIBE_MAX_TOTAL_BYTES", 1024 * 1024)
+# تقدير تقريبي للتوكن: ~4 أحرف لكل توكن (كافٍ للقرار، وليس للفوترة).
+CHARS_PER_TOKEN = 4
+# أقصى عدد من الملفات المستبعدة يُبلَّغ عنه تفصيلاً (لتجنّب رد ضخم).
+MAX_SKIP_REPORT = 40
+
+# مجلدات لا تُمسح أبدًا (لا معنى لها في السياق، وبعضها ضخم جدًا).
+ALWAYS_IGNORE_DIR_NAMES = {
     ".git",
     "node_modules",
     "__pycache__",
     ".venv",
     "venv",
+    "env",
     "dist",
     "build",
+    "out",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".parcel-cache",
+    ".cache",
+    ".wrangler",
+    ".vercel",
     ".idea",
     ".vscode",
-    ".DS_Store",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".terraform",
+    ".gradle",
+    ".dart_tool",
+    "Pods",
 }
+
+# أسماء ملفات مستبعدة دائمًا (مولَّدة أو مكرّرة أو بلا قيمة تخطيطية).
+ALWAYS_IGNORE_FILE_NAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "Cargo.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "codebase.md",
+}
+
+# لواحق ملفات مستبعدة دائمًا (خرائط وأكواد مضغوطة وأرشيفات ذاتية).
+ALWAYS_IGNORE_FILE_SUFFIXES = (
+    ".lock",
+    ".min.js",
+    ".min.css",
+    ".map",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".pdf",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".ico",
+    ".svgz",
+)
+
+# ملفات حساسة تُحجب حجبًا صلبًا: لا تُرسل إلى أي نموذج مهما كان .gitignore.
+SENSITIVE_FILE_NAMES = {
+    ".env",
+    ".dev.vars",
+    ".npmrc",
+    ".netrc",
+    ".pgpass",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "credentials.json",
+}
+SENSITIVE_FILE_PREFIXES = (".env.",)
+SENSITIVE_FILE_SUFFIXES = (
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".keystore",
+    ".jks",
+    ".asc",
+)
+# استثناءات آمنة: قوالب لا تحتوي أسرارًا فعلية.
+SENSITIVE_ALLOWLIST = {
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".env.dist",
+}
+
+
+# ---------------------------------------------------------------------------
+# مطابق مبسّط لأنماط .gitignore (بدون اعتماديات خارجية)
+# ---------------------------------------------------------------------------
+
+
+def _gitignore_glob_to_regex(pattern, anchored, has_slash):
+    """
+    تحويل نمط gitignore إلى تعبير نمطي.
+
+    - `*`  : أي شيء عدا `/`
+    - `?`  : حرف واحد عدا `/`
+    - `**` : أي شيء بما فيه `/` (و `**/` تعني صفر أو أكثر من المجلدات)
+    - النمط المحتوي على `/` يُثبَّت على جذر المشروع، وإلا يطابق اسمًا في أي مستوى.
+    """
+    out = []
+    index = 0
+    length = len(pattern)
+
+    while index < length:
+        char = pattern[index]
+
+        if char == "*":
+            if index + 1 < length and pattern[index + 1] == "*":
+                index += 2
+                if index < length and pattern[index] == "/":
+                    out.append("(?:.*/)?")
+                    index += 1
+                else:
+                    out.append(".*")
+                continue
+            out.append("[^/]*")
+            index += 1
+            continue
+
+        if char == "?":
+            out.append("[^/]")
+            index += 1
+            continue
+
+        out.append(re.escape(char))
+        index += 1
+
+    body = "".join(out)
+    if anchored or has_slash:
+        return "^" + body + "$"
+    return "(?:^|/)" + body + "$"
+
+
+class GitIgnoreMatcher:
+    """
+    مطابق متدرّج لأنماط .gitignore: آخر قاعدة مطابقة هي التي تحسم،
+    و`!` تلغي التجاهل. مطابقة الأنماط تتم على مسار نسبي بصيغة `/`.
+
+    حدّ التصميم: مجلد مُتجاهَل يُقصى كليًا، لذا لا تعمل استثناءات `!`
+    داخله (وهو نفس سلوك git عمليًا).
+    """
+
+    def __init__(self):
+        self._rules = []  # قائمة (regex, negate, dir_only)
+
+    @property
+    def rule_count(self):
+        return len(self._rules)
+
+    def load(self, gitignore_path):
+        try:
+            with open(gitignore_path, "r", encoding="utf-8") as file_handle:
+                lines = file_handle.read().splitlines()
+        except OSError:
+            return
+        self.add_lines(lines)
+
+    def add_lines(self, lines):
+        for raw_line in lines:
+            line = raw_line.rstrip()
+            if not line or line.startswith("#"):
+                continue
+
+            negate = line.startswith("!")
+            if negate:
+                line = line[1:]
+            if not line:
+                continue
+
+            dir_only = line.endswith("/")
+            if dir_only:
+                line = line[:-1]
+
+            anchored = line.startswith("/")
+            if anchored:
+                line = line[1:]
+            if not line:
+                continue
+
+            try:
+                regex = re.compile(
+                    _gitignore_glob_to_regex(line, anchored, "/" in line)
+                )
+            except re.error:
+                continue
+
+            self._rules.append((regex, negate, dir_only))
+
+    def is_ignored(self, relative_path, is_dir):
+        """هل المسار النسبي مُتجاهَل وفق آخر قاعدة مطابقة؟"""
+        normalized = relative_path.replace(os.sep, "/")
+        ignored = False
+        for regex, negate, dir_only in self._rules:
+            if dir_only and not is_dir:
+                continue
+            if regex.search(normalized):
+                ignored = not negate
+        return ignored
+
+
+def _is_always_ignored_dir(name):
+    return name in ALWAYS_IGNORE_DIR_NAMES
+
+
+def _is_always_ignored_file(name):
+    lower = name.lower()
+    if name in ALWAYS_IGNORE_FILE_NAMES:
+        return True
+    return lower.endswith(ALWAYS_IGNORE_FILE_SUFFIXES)
+
+
+def _is_sensitive_file(name):
+    lower = name.lower()
+    if lower in SENSITIVE_ALLOWLIST:
+        return False
+    if name in SENSITIVE_FILE_NAMES:
+        return True
+    if lower.startswith(SENSITIVE_FILE_PREFIXES):
+        return True
+    return lower.endswith(SENSITIVE_FILE_SUFFIXES)
+
+
+def estimate_tokens(char_count):
+    """تقدير تقريبي لعدد التوكنات من عدد الأحرف."""
+    return int(round(char_count / CHARS_PER_TOKEN))
 
 
 # ---------------------------------------------------------------------------
@@ -93,36 +351,148 @@ def build_safe_path(relative_path):
 
 def scan_context():
     """
-    مسح مجلد العمل الحالي وإرجاع قائمة بكل الملفات النصية.
+    مسح مجلد العمل وإرجاع الملفات النصية مع محتوياتها وإحصاءات الحجم.
 
-    - يتخطى المجلدات/الملفات المذكورة في IGNORED_NAMES.
-    - يقرأ الملفات بصيغة UTF-8 فقط.
-    - يتخطى أي ملف يرفع UnicodeDecodeError (أي ملفات binary/صور).
+    سياسة الاستبعاد بالترتيب:
+      1) مجلدات/ملفات محظورة دائمًا (توليد، اعتماديات، خرائط، أرشيفات).
+      2) ملفات حساسة (أسرار/مفاتيح) — حجب صلب لا يمكن تجاوزه.
+      3) قواعد .gitignore في جذر المشروع.
+      4) ملفات تتجاوز سقف الحجم المفرد.
+      5) ملفات ثنائية (تُكتشف بوجود بايت NUL، لا بالاعتماد على فشل فك الترميز).
+      6) ما يتجاوز السقف الكلي — يُسجَّل كمتجاوز ولا يُرسل.
+
+    عند بلوغ السقف الكلي تُرتَّب الملفات حسب العمق أولاً (الجذري قبل العميق)،
+    ثم أبجديًا. هذا يضمن أن الوثائق الجذرية والملفات المعمارية تُرسل دائمًا،
+    بدل اقتطاع عشوائي يترك جزءًا من المشروع خارج السياق.
+
+    يُرجع dict فيه `files` و`stats` (عدد/أحرف/توكن/مستبعدات).
     """
     base_dir = os.getcwd()
-    files = []
+    matcher = GitIgnoreMatcher()
+    matcher.load(os.path.join(base_dir, ".gitignore"))
+
+    skipped = []
+    dropped_count = 0
+    truncated = False
+
+    def record_skip(relative_path, reason, size=None):
+        nonlocal dropped_count
+        dropped_count += 1
+        if len(skipped) < MAX_SKIP_REPORT:
+            entry = {"path": relative_path, "reason": reason}
+            if size is not None:
+                entry["size"] = size
+            skipped.append(entry)
+
+    # --- المرور الأول: جمع المرشحين فقط (بلا قراءة محتوى) ---
+    candidates = []
 
     for root, dirs, filenames in os.walk(base_dir):
-        # تعديل قائمة المجلدات في المكان (in-place) لتجاهلها أثناء النزول.
-        dirs[:] = [d for d in dirs if d not in IGNORED_NAMES]
+        relative_root = os.path.relpath(root, base_dir)
+        if relative_root == ".":
+            relative_root = ""
 
-        for filename in filenames:
-            if filename in IGNORED_NAMES:
+        # قصّ المجلدات المتجاهلة في مكانها لمنع النزول داخلها إطلاقًا.
+        kept_dirs = []
+        for dir_name in sorted(dirs):
+            if _is_always_ignored_dir(dir_name):
+                continue
+            relative_dir = (
+                os.path.join(relative_root, dir_name)
+                if relative_root
+                else dir_name
+            )
+            if matcher.is_ignored(relative_dir, True):
+                continue
+            kept_dirs.append(dir_name)
+        dirs[:] = kept_dirs
+
+        for filename in sorted(filenames):
+            relative_path = (
+                os.path.join(relative_root, filename)
+                if relative_root
+                else filename
+            )
+
+            if _is_always_ignored_file(filename):
+                record_skip(relative_path, "generated_or_lockfile")
+                continue
+
+            if _is_sensitive_file(filename):
+                record_skip(relative_path, "sensitive")
+                continue
+
+            if matcher.is_ignored(relative_path, False):
                 continue
 
             absolute_path = os.path.join(root, filename)
-            relative_path = os.path.relpath(absolute_path, base_dir)
 
             try:
-                with open(absolute_path, "r", encoding="utf-8") as file_handle:
-                    content = file_handle.read()
-            except (UnicodeDecodeError, OSError):
-                # تخطي الملفات الثنائية أو غير القابلة للقراءة.
+                file_size = os.path.getsize(absolute_path)
+            except OSError:
+                record_skip(relative_path, "unreadable")
                 continue
 
-            files.append({"path": relative_path, "content": content})
+            if file_size == 0:
+                record_skip(relative_path, "empty")
+                continue
 
-    return files
+            if file_size > MAX_FILE_BYTES:
+                record_skip(relative_path, "too_large", file_size)
+                continue
+
+            depth = relative_path.replace(os.sep, "/").count("/")
+            candidates.append((depth, relative_path, absolute_path, file_size))
+
+    # الأقرب للجذر أولًا، ثم أبجديًا (نتيجة حتمية وقابلة للتفسير).
+    candidates.sort(key=lambda item: (item[0], item[1]))
+
+    # --- المرور الثاني: القراءة ضمن الميزانية ---
+    files = []
+    total_chars = 0
+    total_bytes = 0
+
+    for _depth, relative_path, absolute_path, file_size in candidates:
+        if total_bytes + file_size > MAX_TOTAL_BYTES:
+            truncated = True
+            record_skip(relative_path, "total_budget", file_size)
+            continue
+
+        try:
+            with open(absolute_path, "rb") as file_handle:
+                head = file_handle.read(8192)
+                # وجود بايت NUL مؤشر قوي على ملف ثنائي.
+                if b"\x00" in head:
+                    record_skip(relative_path, "binary", file_size)
+                    continue
+                raw = head + file_handle.read()
+        except OSError:
+            record_skip(relative_path, "unreadable")
+            continue
+
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            record_skip(relative_path, "non_utf8", file_size)
+            continue
+
+        files.append({"path": relative_path, "content": content})
+        total_chars += len(content)
+        total_bytes += len(raw)
+
+    stats = {
+        "file_count": len(files),
+        "total_chars": total_chars,
+        "total_bytes": total_bytes,
+        "approx_tokens": estimate_tokens(total_chars),
+        "max_file_bytes": MAX_FILE_BYTES,
+        "max_total_bytes": MAX_TOTAL_BYTES,
+        "truncated": truncated,
+        "dropped_count": dropped_count,
+        "skipped": skipped,
+        "gitignore_rules": matcher.rule_count,
+    }
+    return {"files": files, "stats": stats}
 
 
 # ---------------------------------------------------------------------------
@@ -379,16 +749,36 @@ def build_match_diagnostic(content, find_text, relative_path):
 
 @app.route("/health", methods=["GET"])
 def health():
-    """نقطة فحص بسيطة لتأكيد أن الخادم يعمل."""
-    return jsonify({"status": "running", "cwd": os.getcwd()})
+    """نقطة فحص بسيطة لتأكيد أن الخادم يعمل، مع حدود المسح الحالية."""
+    return jsonify(
+        {
+            "status": "running",
+            "cwd": os.getcwd(),
+            "limits": {
+                "max_file_bytes": MAX_FILE_BYTES,
+                "max_total_bytes": MAX_TOTAL_BYTES,
+                "max_total_tokens_estimate": estimate_tokens(MAX_TOTAL_BYTES),
+            },
+        }
+    )
 
 
 @app.route("/context", methods=["GET"])
 def context():
-    """إرجاع سياق المشروع: كل الملفات النصية مع مساراتها ومحتوياتها."""
+    """
+    إرجاع سياق المشروع: الملفات النصية المسموح بها مع مساراتها ومحتوياتها،
+    إضافة إلى `stats` (عدد الملفات، الحجم، تقدير التوكن، والملفات المستبعدة).
+    """
     try:
-        files = scan_context()
-        return jsonify({"files": files})
+        result = scan_context()
+        stats = result["stats"]
+        print(
+            f"[CONTEXT] {stats['file_count']} ملف | "
+            f"~{stats['approx_tokens']} توكن | "
+            f"مستبعد: {stats['dropped_count']}"
+            f"{' | تم الاقتطاع' if stats['truncated'] else ''}"
+        )
+        return jsonify({"files": result["files"], "stats": stats})
     except Exception as exc:  # noqa: BLE001 - نريد إرجاع أي خطأ بصيغة JSON.
         return jsonify({"error": str(exc)}), 500
 

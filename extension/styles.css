@@ -249,6 +249,7 @@
 .vibe-toast.vibe-toast-success { border-left-color: #22c55e; }
 .vibe-toast.vibe-toast-error   { border-left-color: #ef4444; }
 .vibe-toast.vibe-toast-info    { border-left-color: #6366f1; }
+.vibe-toast.vibe-toast-warn    { border-left-color: #f59e0b; }
 
 .vibe-toast.vibe-toast-hide {
   animation: vibe-toast-out 0.25s ease forwards;
